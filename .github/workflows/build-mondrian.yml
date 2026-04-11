@@ -100,6 +100,9 @@ jobs:
           scripts/config --disable CONFIG_TRIM_UNUSED_KSYMS
           scripts/config --enable CONFIG_KSU
           scripts/config --enable CONFIG_KSU_SUSFS
+          # Disable Android vendor hooks (missing from open source)
+          scripts/config --disable CONFIG_ANDROID_VENDOR_HOOKS
+          scripts/config --set-val CONFIG_ANDROID_VENDOR_OEM_DATA 0
 
       - name: Build kernel
         run: |
