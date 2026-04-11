@@ -1,0 +1,85 @@
+name: Build Mondrian Kernel (SukiSU + SUSFS)
+
+permissions:
+  contents: write
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Setup environment
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y bc flex bison libssl-dev libelf-dev \
+            gcc-aarch64-linux-gnu binutils-aarch64-linux-gnu
+
+      - name: Download Android Clang 12
+        run: |
+          mkdir -p "$HOME/clang"
+          wget -q "https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/refs/heads/android12-release/clang-r416183b.tar.gz" -O clang.tar.gz
+          tar xzf clang.tar.gz -C "$HOME/clang"
+          rm clang.tar.gz
+
+      - name: Clone Xiaomi mondrian kernel source
+        run: |
+          git clone --depth=1 --branch mondrian-s-oss \
+            https://github.com/MiCode/Xiaomi_Kernel_OpenSource.git kernel
+
+      - name: Merge SukiSU into kernel
+        run: |
+          cd kernel
+          curl -LSs "https://raw.githubusercontent.com/SukiSU-Ultra/SukiSU-Ultra/main/kernel/setup.sh" | bash -s main
+
+      - name: Get SUSFS patches
+        run: |
+          git clone --depth=1 https://gitlab.com/simonpunk/susfs4ksu.git susfs
+          cd kernel
+          cp -r ../susfs/kernel_patches/5.10/fs/susfs.c fs/ 2>/dev/null || true
+          cp -r ../susfs/kernel_patches/5.10/include/linux/susfs.h include/linux/ 2>/dev/null || true
+
+      - name: Checkout config
+        uses: actions/checkout@v4
+        with:
+          path: repo
+
+      - name: Apply device config
+        run: |
+          cp repo/mondrian_defconfig kernel/.config
+
+      - name: Fix build issues
+        run: |
+          cd kernel
+          mkdir -p drivers/misc/hwid drivers/misc/plaid
+          echo '# stub' > drivers/misc/hwid/Kconfig
+          echo '# stub' > drivers/misc/plaid/Kconfig
+          echo '# empty' > drivers/misc/hwid/Makefile
+          echo '# empty' > drivers/misc/plaid/Makefile
+          sed -i 's/static int ufshcd_wb_ctrl/int ufshcd_wb_ctrl/g' drivers/scsi/ufs/ufshcd.c
+          sed -i 's/static int ufshcd_wb_toggle_flush_during_h8/int ufshcd_wb_toggle_flush_during_h8/g' drivers/scsi/ufs/ufshcd.c
+          sed -i 's/static inline void ufshcd_wb_toggle_flush/void ufshcd_wb_toggle_flush/g' drivers/scsi/ufs/ufshcd.c
+
+      - name: Configure kernel
+        run: |
+          cd kernel
+          export PATH="$HOME/clang/bin:$PATH"
+          scripts/config --disable CONFIG_TRIM_UNUSED_KSYMS
+          scripts/config --enable CONFIG_KSU
+          scripts/config --enable CONFIG_KSU_SUSFS
+          make ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- \
+            CC=clang HOSTCC=gcc olddefconfig
+
+      - name: Build kernel
+        run: |
+          cd kernel
+          export PATH="$HOME/clang/bin:$PATH"
+          make ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- \
+            CC=clang HOSTCC=gcc -j"$(nproc)" Image
+
+      - name: Upload kernel Image
+        uses: actions/upload-artifact@v4
+        with:
+          name: mondrian-kernel-susfs
+          path: kernel/arch/arm64/boot/Image
