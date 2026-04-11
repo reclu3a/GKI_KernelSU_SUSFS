@@ -67,6 +67,20 @@ jobs:
           echo '# empty' > drivers/misc/hwid/Makefile
           echo '# empty' > drivers/misc/plaid/Makefile
 
+          # Fix missing Android vendor hook headers
+          mkdir -p include/trace/hooks
+          for h in thermal cpufreq sched binder signal mm cgroup dtask hung_task \
+                   topology power gic futex rwsem save_stack printk epoch debug \
+                   block wqlockup net audio ufshcd traps iommu vmscan dmabuf \
+                   pm_domain bug creds module vendor_hooks preemptirq logbuf \
+                   mpam timer softlockup; do
+            [ ! -f "include/trace/hooks/${h}.h" ] && \
+              echo "#ifndef _TRACE_HOOK_${h^^}_H" > "include/trace/hooks/${h}.h" && \
+              echo "#define _TRACE_HOOK_${h^^}_H" >> "include/trace/hooks/${h}.h" && \
+              echo "#endif" >> "include/trace/hooks/${h}.h"
+          done
+          echo "Created vendor hook stubs"
+
           # Fix UFS static declarations
           sed -i 's/static int ufshcd_wb_ctrl/int ufshcd_wb_ctrl/g' drivers/scsi/ufs/ufshcd.c
           sed -i 's/static int ufshcd_wb_toggle_flush_during_h8/int ufshcd_wb_toggle_flush_during_h8/g' drivers/scsi/ufs/ufshcd.c
