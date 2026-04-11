@@ -72,6 +72,16 @@ jobs:
           sed -i 's/static int ufshcd_wb_toggle_flush_during_h8/int ufshcd_wb_toggle_flush_during_h8/g' drivers/scsi/ufs/ufshcd.c
           sed -i 's/static inline void ufshcd_wb_toggle_flush/void ufshcd_wb_toggle_flush/g' drivers/scsi/ufs/ufshcd.c
 
+          # Fix USB gadget duplicate definitions
+          # Find line of second "usb_gadget_enable_async_callbacks" doc comment and delete the block
+          START=$(grep -n 'usb_gadget_enable_async_callbacks - tell' drivers/usb/gadget/udc/core.c | head -1 | cut -d: -f1)
+          if [ -n "$START" ]; then
+            # Find the closing brace of usb_gadget_disable_async_callbacks (about 48 lines later)
+            END=$((START + 48))
+            sed -i "${START},${END}d" drivers/usb/gadget/udc/core.c
+            echo "USB gadget fix: deleted lines ${START}-${END}"
+          fi
+
           # Configure
           scripts/config --disable CONFIG_TRIM_UNUSED_KSYMS
           scripts/config --enable CONFIG_KSU
