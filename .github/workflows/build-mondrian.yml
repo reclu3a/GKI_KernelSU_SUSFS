@@ -33,10 +33,10 @@ jobs:
           git clone "$AOSP_MIRROR/kernel/prebuilts/build-tools" -b "$BRANCH" --depth 1 kernel-build-tools
           git clone "$AOSP_MIRROR/platform/system/tools/mkbootimg" -b "$BRANCH" --depth 1 mkbootimg
 
-      - name: Clone Xiaomi mondrian kernel source
+      - name: Clone Baalam kernel source (CLO-based, works on mondrian)
         run: |
-          git clone --depth=1 --branch mondrian-s-oss \
-            https://github.com/MiCode/Xiaomi_Kernel_OpenSource.git kernel
+          git clone --depth=1 \
+            https://github.com/LowTension/android_kernel_xiaomi_sm8475.git kernel
 
       - name: Merge SukiSU into kernel
         run: |
@@ -60,41 +60,10 @@ jobs:
           cd kernel
           cp ../repo/mondrian_defconfig .config
 
-          # Fix missing Xiaomi proprietary dirs
-          mkdir -p drivers/misc/hwid drivers/misc/plaid
-          echo '# stub' > drivers/misc/hwid/Kconfig
-          echo '# stub' > drivers/misc/plaid/Kconfig
-          echo '# empty' > drivers/misc/hwid/Makefile
-          echo '# empty' > drivers/misc/plaid/Makefile
-
-          # Fix missing Android vendor hook headers
-          mkdir -p include/trace/hooks
-          for h in thermal cpufreq sched binder signal mm cgroup dtask hung_task \
-                   topology power gic futex rwsem save_stack printk epoch debug \
-                   block wqlockup net audio ufshcd traps iommu vmscan dmabuf \
-                   pm_domain bug creds module vendor_hooks preemptirq logbuf \
-                   mpam timer softlockup; do
-            [ ! -f "include/trace/hooks/${h}.h" ] && \
-              echo "#ifndef _TRACE_HOOK_${h^^}_H" > "include/trace/hooks/${h}.h" && \
-              echo "#define _TRACE_HOOK_${h^^}_H" >> "include/trace/hooks/${h}.h" && \
-              echo "#endif" >> "include/trace/hooks/${h}.h"
-          done
-          echo "Created vendor hook stubs"
-
-          # Fix UFS static declarations
-          sed -i 's/static int ufshcd_wb_ctrl/int ufshcd_wb_ctrl/g' drivers/scsi/ufs/ufshcd.c
-          sed -i 's/static int ufshcd_wb_toggle_flush_during_h8/int ufshcd_wb_toggle_flush_during_h8/g' drivers/scsi/ufs/ufshcd.c
-          sed -i 's/static inline void ufshcd_wb_toggle_flush/void ufshcd_wb_toggle_flush/g' drivers/scsi/ufs/ufshcd.c
-
-          # Fix USB gadget duplicate definitions
-          # Find line of second "usb_gadget_enable_async_callbacks" doc comment and delete the block
-          START=$(grep -n 'usb_gadget_enable_async_callbacks - tell' drivers/usb/gadget/udc/core.c | head -1 | cut -d: -f1)
-          if [ -n "$START" ]; then
-            # Find the closing brace of usb_gadget_disable_async_callbacks (about 48 lines later)
-            END=$((START + 48))
-            sed -i "${START},${END}d" drivers/usb/gadget/udc/core.c
-            echo "USB gadget fix: deleted lines ${START}-${END}"
-          fi
+          # Fix missing dirs if needed
+          mkdir -p drivers/misc/hwid drivers/misc/plaid 2>/dev/null
+          [ ! -f drivers/misc/hwid/Kconfig ] && echo '# stub' > drivers/misc/hwid/Kconfig && echo '# empty' > drivers/misc/hwid/Makefile
+          [ ! -f drivers/misc/plaid/Kconfig ] && echo '# stub' > drivers/misc/plaid/Kconfig && echo '# empty' > drivers/misc/plaid/Makefile
 
           # Configure
           scripts/config --disable CONFIG_TRIM_UNUSED_KSYMS
@@ -110,17 +79,8 @@ jobs:
           export PATH="${{ github.workspace }}/kernel-build-tools/linux-x86/clang/bin:$PATH"
           make ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- \
             CC=clang HOSTCC=gcc olddefconfig
-          # Force disable vendor hooks AFTER olddefconfig
-          scripts/config --disable CONFIG_ANDROID_VENDOR_HOOKS
-          sed -i 's/CONFIG_ANDROID_VENDOR_HOOKS=y/# CONFIG_ANDROID_VENDOR_HOOKS is not set/' .config
-          scripts/config --disable CONFIG_WERROR
-
-          # Comment out vendor hook calls that cause link errors
-          sed -i 's/trace_android_vh_thermal_pm_notify_suspend/\/\/trace_android_vh_thermal_pm_notify_suspend/' drivers/thermal/thermal_core.c
-          sed -i 's/trace_android_vh_enable_thermal_genl_check/\/\/trace_android_vh_enable_thermal_genl_check/' drivers/thermal/thermal_netlink.c
-
           make ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- \
-            CC=clang HOSTCC=gcc -j"$(nproc)" Image KCFLAGS="-Wno-error=implicit-function-declaration -Wno-error" 2>&1
+            CC=clang HOSTCC=gcc -j"$(nproc)" Image 2>&1
 
       - name: Upload kernel Image
         uses: actions/upload-artifact@v4
