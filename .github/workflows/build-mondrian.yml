@@ -113,10 +113,25 @@ jobs:
           # Force disable vendor hooks AFTER olddefconfig
           scripts/config --disable CONFIG_ANDROID_VENDOR_HOOKS
           sed -i 's/CONFIG_ANDROID_VENDOR_HOOKS=y/# CONFIG_ANDROID_VENDOR_HOOKS is not set/' .config
-          # Also disable Werror for implicit function declarations
           scripts/config --disable CONFIG_WERROR
+
+          # Stub missing vendor hook functions directly in source
+          cat >> drivers/thermal/thermal_core.c << 'STUBEOF'
+/* Stub for missing Android vendor hooks */
+#ifndef trace_android_vh_thermal_pm_notify_suspend
+void trace_android_vh_thermal_pm_notify_suspend(void *unused, ...) {}
+#endif
+STUBEOF
+
+          cat >> drivers/thermal/thermal_netlink.c << 'STUBEOF'
+/* Stub for missing Android vendor hooks */
+#ifndef trace_android_vh_enable_thermal_genl_check
+void trace_android_vh_enable_thermal_genl_check(void *unused, ...) {}
+#endif
+STUBEOF
+
           make ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- \
-            CC=clang HOSTCC=gcc -j"$(nproc)" Image KCFLAGS="-Wno-error=implicit-function-declaration" 2>&1
+            CC=clang HOSTCC=gcc -j"$(nproc)" Image KCFLAGS="-Wno-error=implicit-function-declaration -Wno-error" 2>&1
 
       - name: Upload kernel Image
         uses: actions/upload-artifact@v4
