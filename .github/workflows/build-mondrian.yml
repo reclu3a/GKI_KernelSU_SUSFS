@@ -6,22 +6,32 @@ permissions:
 on:
   workflow_dispatch:
 
+env:
+  CLANG_PATH: "${{ github.workspace }}/kernel-build-tools/linux-x86/clang/bin"
+
 jobs:
   build:
     runs-on: ubuntu-latest
     steps:
+      - name: Maximize build space
+        uses: AdityaGarg8/remove-unwanted-software@v5
+        with:
+          remove-dotnet: 'true'
+          remove-android: 'true'
+          remove-haskell: 'true'
+
       - name: Setup environment
         run: |
           sudo apt-get update
           sudo apt-get install -y bc flex bison libssl-dev libelf-dev \
             gcc-aarch64-linux-gnu binutils-aarch64-linux-gnu
 
-      - name: Download Android Clang 12
+      - name: Download AOSP build tools
         run: |
-          mkdir -p "$HOME/clang"
-          wget -q "https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/refs/heads/android12-release/clang-r416183b.tar.gz" -O clang.tar.gz
-          tar xzf clang.tar.gz -C "$HOME/clang"
-          rm clang.tar.gz
+          AOSP_MIRROR=https://android.googlesource.com
+          BRANCH=main-kernel-build-2024
+          git clone "$AOSP_MIRROR/kernel/prebuilts/build-tools" -b "$BRANCH" --depth 1 kernel-build-tools
+          git clone "$AOSP_MIRROR/platform/system/tools/mkbootimg" -b "$BRANCH" --depth 1 mkbootimg
 
       - name: Clone Xiaomi mondrian kernel source
         run: |
@@ -45,38 +55,36 @@ jobs:
         with:
           path: repo
 
-      - name: Apply device config
-        run: |
-          cp repo/mondrian_defconfig kernel/.config
-
-      - name: Fix build issues
+      - name: Apply device config and fixes
         run: |
           cd kernel
+          cp ../repo/mondrian_defconfig .config
+
+          # Fix missing Xiaomi proprietary dirs
           mkdir -p drivers/misc/hwid drivers/misc/plaid
           echo '# stub' > drivers/misc/hwid/Kconfig
           echo '# stub' > drivers/misc/plaid/Kconfig
           echo '# empty' > drivers/misc/hwid/Makefile
           echo '# empty' > drivers/misc/plaid/Makefile
+
+          # Fix UFS static declarations
           sed -i 's/static int ufshcd_wb_ctrl/int ufshcd_wb_ctrl/g' drivers/scsi/ufs/ufshcd.c
           sed -i 's/static int ufshcd_wb_toggle_flush_during_h8/int ufshcd_wb_toggle_flush_during_h8/g' drivers/scsi/ufs/ufshcd.c
           sed -i 's/static inline void ufshcd_wb_toggle_flush/void ufshcd_wb_toggle_flush/g' drivers/scsi/ufs/ufshcd.c
 
-      - name: Configure kernel
-        run: |
-          cd kernel
-          export PATH="$HOME/clang/bin:$PATH"
+          # Configure
           scripts/config --disable CONFIG_TRIM_UNUSED_KSYMS
           scripts/config --enable CONFIG_KSU
           scripts/config --enable CONFIG_KSU_SUSFS
-          make ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- \
-            CC=clang HOSTCC=gcc olddefconfig
 
       - name: Build kernel
         run: |
           cd kernel
-          export PATH="$HOME/clang/bin:$PATH"
+          export PATH="${{ github.workspace }}/kernel-build-tools/linux-x86/clang/bin:$PATH"
           make ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- \
-            CC=clang HOSTCC=gcc -j"$(nproc)" Image
+            CC=clang HOSTCC=gcc olddefconfig
+          make ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- \
+            CC=clang HOSTCC=gcc -j"$(nproc)" Image 2>&1
 
       - name: Upload kernel Image
         uses: actions/upload-artifact@v4
