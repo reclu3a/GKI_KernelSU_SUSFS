@@ -115,9 +115,9 @@ jobs:
           sed -i 's/CONFIG_ANDROID_VENDOR_HOOKS=y/# CONFIG_ANDROID_VENDOR_HOOKS is not set/' .config
           scripts/config --disable CONFIG_WERROR
 
-          # Stub missing vendor hook functions directly in source
-          echo 'void trace_android_vh_thermal_pm_notify_suspend(void *unused, ...) {}' >> drivers/thermal/thermal_core.c
-          echo 'void trace_android_vh_enable_thermal_genl_check(void *unused, ...) {}' >> drivers/thermal/thermal_netlink.c
+          # Comment out vendor hook calls that cause link errors
+          sed -i 's/trace_android_vh_thermal_pm_notify_suspend/\/\/trace_android_vh_thermal_pm_notify_suspend/' drivers/thermal/thermal_core.c
+          sed -i 's/trace_android_vh_enable_thermal_genl_check/\/\/trace_android_vh_enable_thermal_genl_check/' drivers/thermal/thermal_netlink.c
 
           make ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- \
             CC=clang HOSTCC=gcc -j"$(nproc)" Image KCFLAGS="-Wno-error=implicit-function-declaration -Wno-error" 2>&1
