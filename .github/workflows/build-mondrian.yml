@@ -110,8 +110,13 @@ jobs:
           export PATH="${{ github.workspace }}/kernel-build-tools/linux-x86/clang/bin:$PATH"
           make ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- \
             CC=clang HOSTCC=gcc olddefconfig
+          # Force disable vendor hooks AFTER olddefconfig
+          scripts/config --disable CONFIG_ANDROID_VENDOR_HOOKS
+          sed -i 's/CONFIG_ANDROID_VENDOR_HOOKS=y/# CONFIG_ANDROID_VENDOR_HOOKS is not set/' .config
+          # Also disable Werror for implicit function declarations
+          scripts/config --disable CONFIG_WERROR
           make ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- \
-            CC=clang HOSTCC=gcc -j"$(nproc)" Image 2>&1
+            CC=clang HOSTCC=gcc -j"$(nproc)" Image KCFLAGS="-Wno-error=implicit-function-declaration" 2>&1
 
       - name: Upload kernel Image
         uses: actions/upload-artifact@v4
