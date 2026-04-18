@@ -1,0 +1,177 @@
+From: reclu3a <reclu3a@gmail.com>
+Date: Sat Apr 19 2026 04:30:00 UTC
+Subject: [PATCH] Layer 4 Phase 1: procfs spoof depth (P1+P2+P3)
+
+P1: fs/proc/version.c  - /proc/version 用 SUSFS SPOOF_UNAME 值
+P2: kernel/utsname_sysctl.c - /proc/sys/kernel/osrelease 等同步
+P3: fs/proc/cmdline.c - /proc/cmdline 静态净化硬件指纹
+
+基于 SUSFS v2.1.0 已有的 susfs_spoof_uname() API (已 extern 可用)
+---
+ fs/proc/cmdline.c         | 70 +++++++++++++++++++++++++++++++++++++-
+ fs/proc/version.c         | 13 +++++++
+ kernel/utsname_sysctl.c   | 21 ++++++++++++
+ 3 files changed, 103 insertions(+), 1 deletion(-)
+
+diff --git a/fs/proc/version.c b/fs/proc/version.c
+index 94901e8..a0c0d5f 100644
+--- a/fs/proc/version.c
++++ b/fs/proc/version.c
+@@ -6,12 +6,25 @@
+ #include <linux/seq_file.h>
+ #include <linux/utsname.h>
+
++#ifdef CONFIG_KSU_SUSFS_SPOOF_UNAME
++extern void susfs_spoof_uname(struct new_utsname* tmp);
++#endif
++
+ static int version_proc_show(struct seq_file *m, void *v)
+ {
++#ifdef CONFIG_KSU_SUSFS_SPOOF_UNAME
++	struct new_utsname tmp;
++	memcpy(&tmp, utsname(), sizeof(tmp));
++	susfs_spoof_uname(&tmp);
++	seq_printf(m, linux_proc_banner,
++		tmp.sysname,
++		tmp.release,
++		tmp.version);
++#else
+ 	seq_printf(m, linux_proc_banner,
+ 		utsname()->sysname,
+ 		utsname()->release,
+ 		utsname()->version);
++#endif
+ 	return 0;
+ }
+
+diff --git a/kernel/utsname_sysctl.c b/kernel/utsname_sysctl.c
+index 2bd1b9f..7f4b8e1 100644
+--- a/kernel/utsname_sysctl.c
++++ b/kernel/utsname_sysctl.c
+@@ -13,6 +13,10 @@
+ #include <linux/wait.h>
+ #include <linux/rwsem.h>
+
++#ifdef CONFIG_KSU_SUSFS_SPOOF_UNAME
++extern void susfs_spoof_uname(struct new_utsname* tmp);
++#endif
++
+ #ifdef CONFIG_PROC_SYSCTL
+
+ static void *get_uts(struct ctl_table *table)
+@@ -48,6 +52,23 @@ static int proc_do_uts_string(struct ctl_table *table, int write,
+ 	down_read(&uts_sem);
+ 	memcpy(tmp_data, get_uts(table), sizeof(tmp_data));
+ 	up_read(&uts_sem);
++
++#ifdef CONFIG_KSU_SUSFS_SPOOF_UNAME
++	/* Layer 4 P2: spoof osrelease/version via SUSFS store */
++	if (!write) {
++		struct new_utsname spoofed;
++		memcpy(&spoofed, &init_uts_ns.name, sizeof(spoofed));
++		susfs_spoof_uname(&spoofed);
++		if (table->data == init_uts_ns.name.release)
++			strlcpy(tmp_data, spoofed.release, sizeof(tmp_data));
++		else if (table->data == init_uts_ns.name.version)
++			strlcpy(tmp_data, spoofed.version, sizeof(tmp_data));
++		else if (table->data == init_uts_ns.name.sysname)
++			strlcpy(tmp_data, spoofed.sysname, sizeof(tmp_data));
++	}
++#endif
++
+ 	r = proc_dostring(&uts_table, write, buffer, lenp, ppos);
+
+ 	if (write) {
+diff --git a/fs/proc/cmdline.c b/fs/proc/cmdline.c
+index 8a4c7dd..e2d9a5c 100644
+--- a/fs/proc/cmdline.c
++++ b/fs/proc/cmdline.c
+@@ -3,10 +3,78 @@
+ #include <linux/init.h>
+ #include <linux/proc_fs.h>
+ #include <linux/seq_file.h>
++#include <linux/string.h>
++#include <linux/slab.h>
++
++/* Layer 4 P3: sanitize hardware fingerprint keys from /proc/cmdline
++ * keys we strip (remove entire token key=value):
++ *   hwid.*                  (mondrian hwid encoding)
++ *   msm_drm.oled_wp=        (panel serial number)
++ *   msm_drm.dsi_display0=   (panel model identifier)
++ *   swinfo.fingerprint=     (MIUI build fingerprint leak)
++ *   mtdoops.fingerprint=    (mtdoops fingerprint leak)
++ *   androidboot.oled_wp=    (panel SN in bootconfig-sourced cmdline)
++ */
++#define COMMAND_LINE_SIZE_SANITIZED 4096
++
++static char sanitized_cmdline[COMMAND_LINE_SIZE_SANITIZED] __read_mostly;
++static bool sanitized_ready __read_mostly;
++
++static const char * const skip_prefixes[] = {
++	"hwid.",
++	"msm_drm.oled_wp=",
++	"msm_drm.dsi_display0=",
++	"swinfo.fingerprint=",
++	"mtdoops.fingerprint=",
++	"androidboot.oled_wp=",
++	NULL,
++};
++
++static bool token_should_skip(const char *tok, size_t tok_len)
++{
++	int i;
++	for (i = 0; skip_prefixes[i]; i++) {
++		size_t plen = strlen(skip_prefixes[i]);
++		if (tok_len >= plen && !strncmp(tok, skip_prefixes[i], plen))
++			return true;
++	}
++	return false;
++}
++
++static void sanitize_cmdline_once(void)
++{
++	const char *p = saved_command_line;
++	char *out = sanitized_cmdline;
++	size_t remain = sizeof(sanitized_cmdline) - 1;
++	bool first = true;
++
++	while (*p) {
++		const char *end;
++		size_t tlen;
++		while (*p == ' ') p++;
++		if (!*p) break;
++		end = p;
++		while (*end && *end != ' ') end++;
++		tlen = end - p;
++		if (!token_should_skip(p, tlen)) {
++			if (!first && remain > 0) { *out++ = ' '; remain--; }
++			if (tlen > remain) tlen = remain;
++			memcpy(out, p, tlen); out += tlen; remain -= tlen;
++			first = false;
++		}
++		p = end;
++	}
++	*out = '\0';
++	sanitized_ready = true;
++}
+
+ static int cmdline_proc_show(struct seq_file *m, void *v)
+ {
+-	seq_puts(m, saved_command_line);
++	if (sanitized_ready)
++		seq_puts(m, sanitized_cmdline);
++	else
++		seq_puts(m, saved_command_line);
+ 	seq_putc(m, '\n');
+ 	return 0;
+ }
+@@ -14,6 +82,7 @@ static int cmdline_proc_show(struct seq_file *m, void *v)
+ static int __init proc_cmdline_init(void)
+ {
+ 	proc_create_single("cmdline", 0, NULL, cmdline_proc_show);
++	sanitize_cmdline_once();
+ 	return 0;
+ }
+ fs_initcall(proc_cmdline_init);
+--
+2.43.0
