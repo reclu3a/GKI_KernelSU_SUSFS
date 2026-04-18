@@ -1,26 +1,95 @@
-From: reclu3a <reclu3a@gmail.com>
-Date: Sat Apr 19 2026 04:30:00 UTC
-Subject: [PATCH] Layer 4 Phase 1: procfs spoof depth (P1+P2+P3)
-
-P1: fs/proc/version.c  - /proc/version 用 SUSFS SPOOF_UNAME 值
-P2: kernel/utsname_sysctl.c - /proc/sys/kernel/osrelease 等同步
-P3: fs/proc/cmdline.c - /proc/cmdline 静态净化硬件指纹
-
-基于 SUSFS v2.1.0 已有的 susfs_spoof_uname() API (已 extern 可用)
----
- fs/proc/cmdline.c         | 70 +++++++++++++++++++++++++++++++++++++-
- fs/proc/version.c         | 13 +++++++
- kernel/utsname_sysctl.c   | 21 ++++++++++++
- 3 files changed, 103 insertions(+), 1 deletion(-)
-
-diff --git a/fs/proc/version.c b/fs/proc/version.c
-index 94901e8..a0c0d5f 100644
---- a/fs/proc/version.c
-+++ b/fs/proc/version.c
-@@ -6,12 +6,25 @@
+diff --color -urN a/fs/proc/cmdline.c b/fs/proc/cmdline.c
+--- a/fs/proc/cmdline.c	2026-04-18 12:41:35
++++ b/fs/proc/cmdline.c	2026-04-18 12:42:36
+@@ -3,16 +3,80 @@
+ #include <linux/init.h>
+ #include <linux/proc_fs.h>
+ #include <linux/seq_file.h>
++#include <linux/string.h>
+ 
++/* Layer 4 P3: sanitize hardware fingerprint keys from /proc/cmdline.
++ * Strip tokens beginning with any of these prefixes (and their values). */
++static const char * const susfs_cmdline_skip_prefixes[] = {
++	"hwid.",
++	"msm_drm.oled_wp=",
++	"msm_drm.dsi_display0=",
++	"swinfo.fingerprint=",
++	"mtdoops.fingerprint=",
++	"androidboot.oled_wp=",
++	NULL,
++};
++
++static char susfs_sanitized_cmdline[4096] __read_mostly;
++static bool susfs_sanitized_ready __read_mostly;
++
++static bool susfs_cmdline_token_skip(const char *tok, size_t tok_len)
++{
++	int i;
++	for (i = 0; susfs_cmdline_skip_prefixes[i]; i++) {
++		size_t plen = strlen(susfs_cmdline_skip_prefixes[i]);
++		if (tok_len >= plen &&
++		    !strncmp(tok, susfs_cmdline_skip_prefixes[i], plen))
++			return true;
++	}
++	return false;
++}
++
++static void susfs_cmdline_sanitize_once(void)
++{
++	const char *p = saved_command_line;
++	char *out = susfs_sanitized_cmdline;
++	size_t remain = sizeof(susfs_sanitized_cmdline) - 1;
++	bool first = true;
++
++	while (*p) {
++		const char *end;
++		size_t tlen;
++		while (*p == ' ') p++;
++		if (!*p) break;
++		end = p;
++		while (*end && *end != ' ') end++;
++		tlen = end - p;
++		if (!susfs_cmdline_token_skip(p, tlen)) {
++			if (!first && remain > 0) {
++				*out++ = ' ';
++				remain--;
++			}
++			if (tlen > remain) tlen = remain;
++			memcpy(out, p, tlen);
++			out += tlen;
++			remain -= tlen;
++			first = false;
++		}
++		p = end;
++	}
++	*out = '\0';
++	susfs_sanitized_ready = true;
++}
++
+ static int cmdline_proc_show(struct seq_file *m, void *v)
+ {
+-	seq_puts(m, saved_command_line);
++	if (susfs_sanitized_ready)
++		seq_puts(m, susfs_sanitized_cmdline);
++	else
++		seq_puts(m, saved_command_line);
+ 	seq_putc(m, '\n');
+ 	return 0;
+ }
+ 
+ static int __init proc_cmdline_init(void)
+ {
++	susfs_cmdline_sanitize_once();
+ 	proc_create_single("cmdline", 0, NULL, cmdline_proc_show);
+ 	return 0;
+ }
+diff --color -urN a/fs/proc/version.c b/fs/proc/version.c
+--- a/fs/proc/version.c	2026-04-18 12:41:35
++++ b/fs/proc/version.c	2026-04-18 12:42:03
+@@ -6,12 +6,26 @@
  #include <linux/seq_file.h>
  #include <linux/utsname.h>
-
+ 
 +#ifdef CONFIG_KSU_SUSFS_SPOOF_UNAME
 +extern void susfs_spoof_uname(struct new_utsname* tmp);
 +#endif
@@ -31,41 +100,40 @@ index 94901e8..a0c0d5f 100644
 +	struct new_utsname tmp;
 +	memcpy(&tmp, utsname(), sizeof(tmp));
 +	susfs_spoof_uname(&tmp);
-+	seq_printf(m, linux_proc_banner,
+ 	seq_printf(m, linux_proc_banner,
 +		tmp.sysname,
 +		tmp.release,
 +		tmp.version);
 +#else
- 	seq_printf(m, linux_proc_banner,
++	seq_printf(m, linux_proc_banner,
  		utsname()->sysname,
  		utsname()->release,
  		utsname()->version);
 +#endif
  	return 0;
  }
-
-diff --git a/kernel/utsname_sysctl.c b/kernel/utsname_sysctl.c
-index 2bd1b9f..7f4b8e1 100644
---- a/kernel/utsname_sysctl.c
-+++ b/kernel/utsname_sysctl.c
-@@ -13,6 +13,10 @@
+ 
+diff --color -urN a/kernel/utsname_sysctl.c b/kernel/utsname_sysctl.c
+--- a/kernel/utsname_sysctl.c	2026-04-18 12:41:35
++++ b/kernel/utsname_sysctl.c	2026-04-18 12:43:10
+@@ -12,6 +12,10 @@
  #include <linux/wait.h>
  #include <linux/rwsem.h>
-
+ 
 +#ifdef CONFIG_KSU_SUSFS_SPOOF_UNAME
 +extern void susfs_spoof_uname(struct new_utsname* tmp);
 +#endif
 +
  #ifdef CONFIG_PROC_SYSCTL
-
+ 
  static void *get_uts(struct ctl_table *table)
-@@ -48,6 +52,23 @@ static int proc_do_uts_string(struct ctl_table *table, int write,
+@@ -48,6 +52,22 @@
  	down_read(&uts_sem);
  	memcpy(tmp_data, get_uts(table), sizeof(tmp_data));
  	up_read(&uts_sem);
 +
 +#ifdef CONFIG_KSU_SUSFS_SPOOF_UNAME
-+	/* Layer 4 P2: spoof osrelease/version via SUSFS store */
++	/* Layer 4 P2: spoof osrelease/version/sysname when reading */
 +	if (!write) {
 +		struct new_utsname spoofed;
 +		memcpy(&spoofed, &init_uts_ns.name, sizeof(spoofed));
@@ -80,98 +148,5 @@ index 2bd1b9f..7f4b8e1 100644
 +#endif
 +
  	r = proc_dostring(&uts_table, write, buffer, lenp, ppos);
-
+ 
  	if (write) {
-diff --git a/fs/proc/cmdline.c b/fs/proc/cmdline.c
-index 8a4c7dd..e2d9a5c 100644
---- a/fs/proc/cmdline.c
-+++ b/fs/proc/cmdline.c
-@@ -3,10 +3,78 @@
- #include <linux/init.h>
- #include <linux/proc_fs.h>
- #include <linux/seq_file.h>
-+#include <linux/string.h>
-+#include <linux/slab.h>
-+
-+/* Layer 4 P3: sanitize hardware fingerprint keys from /proc/cmdline
-+ * keys we strip (remove entire token key=value):
-+ *   hwid.*                  (mondrian hwid encoding)
-+ *   msm_drm.oled_wp=        (panel serial number)
-+ *   msm_drm.dsi_display0=   (panel model identifier)
-+ *   swinfo.fingerprint=     (MIUI build fingerprint leak)
-+ *   mtdoops.fingerprint=    (mtdoops fingerprint leak)
-+ *   androidboot.oled_wp=    (panel SN in bootconfig-sourced cmdline)
-+ */
-+#define COMMAND_LINE_SIZE_SANITIZED 4096
-+
-+static char sanitized_cmdline[COMMAND_LINE_SIZE_SANITIZED] __read_mostly;
-+static bool sanitized_ready __read_mostly;
-+
-+static const char * const skip_prefixes[] = {
-+	"hwid.",
-+	"msm_drm.oled_wp=",
-+	"msm_drm.dsi_display0=",
-+	"swinfo.fingerprint=",
-+	"mtdoops.fingerprint=",
-+	"androidboot.oled_wp=",
-+	NULL,
-+};
-+
-+static bool token_should_skip(const char *tok, size_t tok_len)
-+{
-+	int i;
-+	for (i = 0; skip_prefixes[i]; i++) {
-+		size_t plen = strlen(skip_prefixes[i]);
-+		if (tok_len >= plen && !strncmp(tok, skip_prefixes[i], plen))
-+			return true;
-+	}
-+	return false;
-+}
-+
-+static void sanitize_cmdline_once(void)
-+{
-+	const char *p = saved_command_line;
-+	char *out = sanitized_cmdline;
-+	size_t remain = sizeof(sanitized_cmdline) - 1;
-+	bool first = true;
-+
-+	while (*p) {
-+		const char *end;
-+		size_t tlen;
-+		while (*p == ' ') p++;
-+		if (!*p) break;
-+		end = p;
-+		while (*end && *end != ' ') end++;
-+		tlen = end - p;
-+		if (!token_should_skip(p, tlen)) {
-+			if (!first && remain > 0) { *out++ = ' '; remain--; }
-+			if (tlen > remain) tlen = remain;
-+			memcpy(out, p, tlen); out += tlen; remain -= tlen;
-+			first = false;
-+		}
-+		p = end;
-+	}
-+	*out = '\0';
-+	sanitized_ready = true;
-+}
-
- static int cmdline_proc_show(struct seq_file *m, void *v)
- {
--	seq_puts(m, saved_command_line);
-+	if (sanitized_ready)
-+		seq_puts(m, sanitized_cmdline);
-+	else
-+		seq_puts(m, saved_command_line);
- 	seq_putc(m, '\n');
- 	return 0;
- }
-@@ -14,6 +82,7 @@ static int cmdline_proc_show(struct seq_file *m, void *v)
- static int __init proc_cmdline_init(void)
- {
- 	proc_create_single("cmdline", 0, NULL, cmdline_proc_show);
-+	sanitize_cmdline_once();
- 	return 0;
- }
- fs_initcall(proc_cmdline_init);
---
-2.43.0
