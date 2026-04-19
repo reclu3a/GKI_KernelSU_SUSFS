@@ -1,7 +1,7 @@
 diff --color -urN a/fs/proc/cmdline.c b/fs/proc/cmdline.c
 --- a/fs/proc/cmdline.c	2026-04-18 12:41:35
-+++ b/fs/proc/cmdline.c	2026-04-18 12:42:36
-@@ -3,16 +3,80 @@
++++ b/fs/proc/cmdline.c	2026-04-18 20:09:10
+@@ -3,16 +3,81 @@
  #include <linux/init.h>
  #include <linux/proc_fs.h>
  #include <linux/seq_file.h>
@@ -9,13 +9,14 @@ diff --color -urN a/fs/proc/cmdline.c b/fs/proc/cmdline.c
  
 +/* Layer 4 P3: sanitize hardware fingerprint keys from /proc/cmdline.
 + * Strip tokens beginning with any of these prefixes (and their values). */
++/* Only strip pure-fingerprint keys; keep msm_drm.* / hwid.* / oled_wp
++ * because vendor kernel modules (msm_drm.ko etc.) parse /proc/cmdline
++ * at insmod time and require these params for display panel init.
++ * Dropping them caused black screen after boot (display HAL alive but
++ * panel not initialized). */
 +static const char * const susfs_cmdline_skip_prefixes[] = {
-+	"hwid.",
-+	"msm_drm.oled_wp=",
-+	"msm_drm.dsi_display0=",
 +	"swinfo.fingerprint=",
 +	"mtdoops.fingerprint=",
-+	"androidboot.oled_wp=",
 +	NULL,
 +};
 +
