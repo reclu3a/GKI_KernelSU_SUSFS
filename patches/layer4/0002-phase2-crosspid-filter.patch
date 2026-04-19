@@ -1,0 +1,124 @@
+diff --color -urN a/fs/proc/base.c b/fs/proc/base.c
+--- a/fs/proc/base.c	2026-04-18 20:36:15
++++ b/fs/proc/base.c	2026-04-18 20:36:43
+@@ -391,6 +391,35 @@
+ 	return ret;
+ }
+ 
++#ifdef CONFIG_KSU_SUSFS_SPOOF_CMDLINE_OR_BOOTCONFIG
++/* Layer 4 P4: check if target process is a sensitive daemon (ksud, tricky_store
++ * supervisor, TEESimulator, zygisk, etc.) and caller is a third-party app.
++ * Returns true if this cross-pid cmdline read should be faked. */
++static bool susfs_should_fake_pid_cmdline(struct task_struct *tsk)
++{
++	const char *comm;
++	kuid_t uid = current_uid();
++	if (tsk == current)
++		return false;
++	if (__kuid_val(uid) < 10000)
++		return false;
++	comm = tsk->comm;
++	if (!strncmp(comm, "ksud", 4))
++		return true;
++	if (!strncmp(comm, "TEESim", 6))
++		return true;
++	if (!strncmp(comm, "supervis", 8))
++		return true;
++	if (!strncmp(comm, "susfsd", 6))
++		return true;
++	if (strstr(comm, "zygisk"))
++		return true;
++	if (strstr(comm, "amber") || strstr(comm, "miui_therm"))
++		return true;
++	return false;
++}
++#endif
++
+ static ssize_t proc_pid_cmdline_read(struct file *file, char __user *buf,
+ 				     size_t count, loff_t *pos)
+ {
+@@ -402,6 +431,22 @@
+ 	tsk = get_proc_task(file_inode(file));
+ 	if (!tsk)
+ 		return -ESRCH;
++
++#ifdef CONFIG_KSU_SUSFS_SPOOF_CMDLINE_OR_BOOTCONFIG
++	if (susfs_should_fake_pid_cmdline(tsk)) {
++		static const char fake_cmdline[] = "/system/bin/init";
++		size_t flen = sizeof(fake_cmdline) - 1;
++		put_task_struct(tsk);
++		if (*pos >= (loff_t)flen)
++			return 0;
++		if (count > flen - *pos)
++			count = flen - *pos;
++		if (copy_to_user(buf, fake_cmdline + *pos, count))
++			return -EFAULT;
++		*pos += count;
++		return count;
++	}
++#endif
+ 	ret = get_task_cmdline(tsk, buf, count, pos);
+ 	put_task_struct(tsk);
+ 	if (ret > 0)
+diff --color -urN a/fs/proc/task_mmu.c b/fs/proc/task_mmu.c
+--- a/fs/proc/task_mmu.c	2026-04-18 20:36:15
++++ b/fs/proc/task_mmu.c	2026-04-18 20:37:12
+@@ -318,6 +318,43 @@
+ 	seq_putc(m, ' ');
+ }
+ 
++#ifdef CONFIG_KSU_SUSFS_SUS_MAP
++/* Layer 4 P5: cross-pid maps filter — hide sensitive .so paths from
++ * third-party apps reading OTHER processes' /proc/<pid>/maps.
++ * When caller is uid>=10000 and target is a different task and the mapped
++ * file path contains a sensitive keyword, replace the line with [anon]. */
++static bool susfs_crosspid_map_should_hide(struct seq_file *m,
++					    struct file *file)
++{
++	struct proc_maps_private *priv = m->private;
++	struct task_struct *target;
++	const unsigned char *name;
++	if (!file || !priv)
++		return false;
++	target = priv->task;
++	if (!target || target == current)
++		return false;
++	if (__kuid_val(current_uid()) < 10000)
++		return false;
++	name = file->f_path.dentry->d_name.name;
++	if (!name)
++		return false;
++	if (strstr((const char *)name, "libpine"))
++		return true;
++	if (strstr((const char *)name, "libzygisk"))
++		return true;
++	if (strstr((const char *)name, "KernelSU"))
++		return true;
++	if (strstr((const char *)name, "tricky_store"))
++		return true;
++	if (strstr((const char *)name, "TEESimulator"))
++		return true;
++	if (strstr((const char *)name, "ksu_susfs"))
++		return true;
++	return false;
++}
++#endif
++
+ static void
+ show_map_vma(struct seq_file *m, struct vm_area_struct *vma)
+ {
+@@ -346,6 +383,14 @@
+ 	 * special [heap] marker for the heap:
+ 	 */
+ 	if (file) {
++#ifdef CONFIG_KSU_SUSFS_SUS_MAP
++		if (susfs_crosspid_map_should_hide(m, file)) {
++			seq_pad(m, ' ');
++			seq_puts(m, "[anon]");
++			seq_putc(m, '\n');
++			return;
++		}
++#endif
+ 		seq_pad(m, ' ');
+ 		seq_file_path(m, file, "\n");
+ 		goto done;

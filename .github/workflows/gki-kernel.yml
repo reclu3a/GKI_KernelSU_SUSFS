@@ -343,21 +343,22 @@ jobs:
             patch -p1 --fuzz=3 < 50_add_susfs_in_gki-${{ inputs.android_version }}-${{ inputs.kernel_version }}.patch || true
           fi
 
-      - name: 应用 Layer 4 Phase 1 自定义 patch (procfs spoof)
+      - name: Apply Layer 4 custom patches (procfs spoof + crosspid filter)
         run: |
           cd "$CONFIG/common"
           mkdir -p /tmp/layer4
-          curl -LSs https://raw.githubusercontent.com/reclu3a/GKI_KernelSU_SUSFS/main/patches/layer4/0001-phase1-procfs-spoof.patch \
-               -o /tmp/layer4/0001-phase1-procfs-spoof.patch
-          echo "--- patch file head ---"
-          head -10 /tmp/layer4/0001-phase1-procfs-spoof.patch
-          echo "--- applying ---"
-          patch -p1 --forward --fuzz=3 < /tmp/layer4/0001-phase1-procfs-spoof.patch || {
-              echo "[!!] Layer 4 patch FAILED — rej files:"
-              find . -name "*.rej" 2>/dev/null | head
-              exit 1
-          }
-          echo "[+] Layer 4 Phase 1 applied successfully"
+          BASE_URL="https://raw.githubusercontent.com/reclu3a/GKI_KernelSU_SUSFS/main/patches/layer4"
+          for fname in "0001-phase1-procfs-spoof.patch" "0002-phase2-crosspid-filter.patch"; do
+              echo "=== downloading ${fname} ==="
+              curl -LSs "${BASE_URL}/${fname}" -o "/tmp/layer4/${fname}"
+              echo "=== applying ${fname} ==="
+              patch -p1 --forward --fuzz=3 < "/tmp/layer4/${fname}" || {
+                  echo "[!!] ${fname} FAILED — rej files:"
+                  find . -name "*.rej" 2>/dev/null | head
+                  exit 1
+              }
+          done
+          echo "[+] Layer 4 all patches applied successfully"
 
       - name: 一些修复补丁
         run: |
